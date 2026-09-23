@@ -288,7 +288,11 @@ export function validateSnapshot(snapshot, knownTypes) {
     isString(tombstone?.from_id) && isString(tombstone?.to_id) && isString(tombstone?.kind)
     && isTimestamp(tombstone?.deleted_at));
 
-  return { deviceId: snapshot.deviceId, objects, relations, tombstones, relationTombstones, rejected };
+  // Both optional and display-only: older versions of this plugin write
+  // neither, and a peer's panel shows what it has.
+  const deviceName = isString(snapshot.deviceName) ? snapshot.deviceName.slice(0, 80) : "";
+  const writtenAt = isTimestamp(snapshot.writtenAt) ? snapshot.writtenAt : null;
+  return { deviceId: snapshot.deviceId, deviceName, writtenAt, objects, relations, tombstones, relationTombstones, rejected };
 }
 
 function objectProblem(object, types) {
@@ -327,6 +331,240 @@ export function planApply(validated, openObjectId) {
     apply: { ...validated, objects: validated.objects.filter((object) => object.id !== openObjectId) },
     deferred,
   };
+}
+
+/** SHA-256 of a value's JSON, as hex. Used to skip re-uploading a snapshot
+ * that has not changed since this device last sent it. */
+export async function digestOf(value) {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(JSON.stringify(value))));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// ---------------------------------------------------------------- conflicts
+//
+// Without this, an object edited on two devices between syncs kept whichever
+// edit was newer and dropped the other without a word. Now:
+//
+// - "Edited on both" is told apart from "edited on one side" by a BASE: the
+//   object as it looked in that peer's snapshot the last time this device read
+//   it. Local differs from the base -> we changed it since; remote differs ->
+//   the peer did. Both, and different from each other -> a conflict. Hashes,
+//   not clocks, so a machine whose clock is off cannot fake or hide one.
+// - A table (whose rows, columns and cells all carry ids) is merged cell by
+//   cell: a column added here and a cell changed there both survive.
+// - Anything else, or a cell changed on both sides: the newer version wins as
+//   before, and the losing one is saved next to it as a conflict copy. Only the
+//   device whose OWN version lost makes that copy -- both devices see the same
+//   conflict, and the copy must appear once.
+//
+// No base yet (first run on this version, or an object new to that peer):
+// plain newest-wins, exactly the old behaviour.
+
+/** Table props kept as merge bases, per peer, in characters. */
+const TABLE_BASE_BUDGET = 500_000;
+
+/** cyrb53: a fast 53-bit string hash. Not security -- a collision would only
+ * hide one conflict, which is the old behaviour anyway. */
+function hash53(text) {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/** What a user would call "the object's content" -- everything but the clock. */
+export function objectHash(object) {
+  return hash53(JSON.stringify([
+    object.type, object.title, object.content, object.props,
+    object.archived_at ?? null, object.trashed_at ?? null, object.parent_id ?? null,
+  ]));
+}
+
+// An empty cell has several spellings ("", null, missing, an unticked box);
+// they must compare equal or a column added on one side reads as a conflict
+// in every row.
+const isEmptyCell = (value) => value === undefined || value === null || value === "" || value === false;
+// Key order must not matter either: Tables writes a row's cells in column
+// order, so the same row can come back spelled differently.
+const canon = (value) => JSON.stringify(value ?? null, (_, v) => (v && typeof v === "object" && !Array.isArray(v)
+  ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]]))
+  : v));
+const cellKey = (value) => (isEmptyCell(value) ? "" : canon(value));
+const valueKey = (value) => canon(value);
+const rowKey = (row) => canon(Object.fromEntries(Object.entries(row?.cells ?? {}).filter(([, v]) => !isEmptyCell(v))));
+
+/**
+ * Three-way merge of two Tables `props` strings against their common base.
+ * `localNewer` breaks ties (same cell changed on both sides): the newer
+ * object's value wins. Returns null when any side is not a readable table --
+ * the caller then falls back to a conflict copy. `localLost` says whether any
+ * of this device's cell edits lost, i.e. whether this device owes a copy.
+ *
+ * The output is canonical (sorted keys) so both devices, merging the same
+ * three versions from opposite ends, write byte-identical props and the
+ * exchange settles instead of ping-ponging.
+ */
+export function mergeTableProps(baseText, localText, remoteText, localNewer) {
+  const parse = (text) => {
+    try {
+      const value = JSON.parse(text || "{}");
+      return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    } catch {
+      return null;
+    }
+  };
+  const base = parse(baseText);
+  const mine = parse(localText);
+  const theirs = parse(remoteText);
+  if (!base || !mine || !theirs) return null;
+
+  let conflicts = 0;
+  let localLost = false;
+  const pick = (b, l, r, key, isCell) => {
+    if (key(l) === key(r)) return l;
+    if (key(l) === key(b)) return r;
+    if (key(r) === key(b)) return l;
+    if (isCell) {
+      conflicts += 1;
+      if (!localNewer) localLost = true;
+    }
+    return localNewer ? l : r;
+  };
+  const byId = (list) => new Map((Array.isArray(list) ? list : [])
+    .filter((item) => item && typeof item.id === "string")
+    .map((item) => [item.id, item]));
+  const sorted = (object) => Object.fromEntries(Object.keys(object).sort().map((k) => [k, object[k]]));
+
+  const mergeList = (field, mergeItem, itemKey) => {
+    const b = byId(base[field]);
+    const l = byId(mine[field]);
+    const r = byId(theirs[field]);
+    const [first, second] = localNewer ? [l, r] : [r, l];
+    const out = [];
+    for (const id of new Set([...first.keys(), ...second.keys()])) {
+      const bi = b.get(id);
+      const li = l.get(id);
+      const ri = r.get(id);
+      if (li && ri) { out.push(mergeItem(bi, li, ri)); continue; }
+      const present = li ?? ri;
+      // Added on one side: keep. Deleted on one side: gone -- unless the
+      // other side changed it since, in which case keeping it loses nothing.
+      if (!bi || itemKey(bi) !== itemKey(present)) out.push(present);
+    }
+    return out;
+  };
+
+  const merged = {
+    columns: mergeList("columns", (b, l, r) => sorted(pick(b, l, r, valueKey, false)), valueKey),
+    rows: mergeList("rows", (b, l, r) => {
+      const cells = {};
+      const ids = new Set([...Object.keys(l.cells ?? {}), ...Object.keys(r.cells ?? {})]);
+      for (const id of [...ids].sort()) {
+        const value = pick(b?.cells?.[id], l.cells?.[id], r.cells?.[id], cellKey, true);
+        if (value !== undefined) cells[id] = value;
+      }
+      return { id: l.id, cells };
+    }, rowKey),
+  };
+  // Styles, merged cells, width lock: whole-value three-way, newer wins a tie.
+  // Not counted as a lost edit -- they are formatting, not data.
+  for (const key of new Set([...Object.keys(mine), ...Object.keys(theirs)])) {
+    if (key === "columns" || key === "rows") continue;
+    const value = pick(base[key], mine[key], theirs[key], valueKey, false);
+    if (value !== undefined) merged[key] = value;
+  }
+  return { props: JSON.stringify(sorted(merged)), conflicts, localLost };
+}
+
+/**
+ * Decide what to hand `data.sync.apply` for one peer's objects.
+ *
+ * `localById` is this device's current objects; `bases` / `tableBases` are
+ * that peer's objects (hash / table props) as last read. Returns the objects
+ * to apply -- merged tables and conflict copies included -- plus a status
+ * note per conflict.
+ */
+export function planConflicts(remoteObjects, localById, bases, tableBases, copyLabel, now = Date.now()) {
+  const objects = [];
+  const notes = [];
+  let conflicts = 0;
+  const copyOf = (local) => ({
+    ...local,
+    id: crypto.randomUUID(),
+    title: `${local.title || "Untitled"} (conflict copy — ${copyLabel})`.slice(0, LIMITS.title),
+    created_at: now,
+    updated_at: now,
+  });
+
+  for (const remote of remoteObjects) {
+    const local = localById.get(remote.id);
+    const base = bases[remote.id];
+    const remoteHash = objectHash(remote);
+    const localHash = local ? objectHash(local) : null;
+    if (!local || !base || remoteHash === localHash || localHash === base || remoteHash === base) {
+      objects.push(remote);
+      continue;
+    }
+    conflicts += 1;
+    const localNewer = local.updated_at !== remote.updated_at ? local.updated_at > remote.updated_at : localHash > remoteHash;
+    // Strictly newer than both, so Core's newest-wins takes it on every device.
+    const stamp = Math.max(local.updated_at, remote.updated_at) + 1;
+    const title = remote.title || local.title || "Untitled";
+
+    const merged = remote.type === "table" && local.type === "table" && typeof tableBases[remote.id] === "string"
+      ? mergeTableProps(tableBases[remote.id], local.props, remote.props, localNewer)
+      : null;
+    if (merged) {
+      objects.push({ ...(localNewer ? local : remote), props: merged.props, updated_at: stamp });
+      if (merged.localLost) objects.push(copyOf(local));
+      notes.push(merged.conflicts
+        ? `"${title}": merged edits from both devices; ${merged.conflicts} cell(s) changed on both, newer kept${merged.localLost ? ", this device's version saved as a conflict copy" : ""}.`
+        : `"${title}": merged edits from both devices.`);
+      continue;
+    }
+
+    if (localNewer) {
+      // Core keeps ours by itself. The other device copies its own version
+      // when it reads this one.
+      notes.push(`"${title}": edited on both devices; this device's newer version kept.`);
+      continue;
+    }
+    objects.push(remote.updated_at > local.updated_at ? remote : { ...remote, updated_at: stamp });
+    // A version that was in the trash is not worth resurrecting as a copy.
+    if (!local.trashed_at) objects.push(copyOf(local));
+    notes.push(`"${title}": edited on both devices; the other device's newer version kept, this device's saved as a conflict copy.`);
+  }
+  return { objects, notes, conflicts };
+}
+
+/** Next base for one peer: its objects as just read -- except the held-back
+ * ones, which keep their old base because this device has not taken them. */
+export function nextBases(peerObjects, previous, previousTables, heldBack) {
+  const bases = {};
+  const tables = {};
+  let budget = TABLE_BASE_BUDGET;
+  for (const object of peerObjects) {
+    if (heldBack.has(object.id)) {
+      if (previous[object.id]) bases[object.id] = previous[object.id];
+      if (previousTables[object.id]) tables[object.id] = previousTables[object.id];
+      continue;
+    }
+    bases[object.id] = objectHash(object);
+    // ponytail: bases live in the app's shared localStorage (a few MB for
+    // every plugin together), so big tables get no base and fall back to a
+    // conflict copy. A Core-side store would lift this.
+    if (object.type === "table" && object.props.length <= budget) {
+      tables[object.id] = object.props;
+      budget -= object.props.length;
+    }
+  }
+  return { bases, tables };
 }
 
 // ---------------------------------------------------------------- Google API
@@ -508,6 +746,11 @@ class Sync {
     this.listeners = new Set();
   }
 
+  /** What other devices call this one in their panel. Blank until named. */
+  deviceName() {
+    return String(this.context.storage.get("deviceName") ?? "").trim().slice(0, 80);
+  }
+
   onStatus(listener) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -607,57 +850,105 @@ class Sync {
 
       let pulled = 0;
       let skipped = 0;
+      let conflicts = 0;
+      // This device's objects as they stand, kept current as each peer is
+      // applied, so the next peer's conflicts are judged against the result.
+      const localById = new Map(local.objects.map((object) => [object.id, object]));
+      const copyLabel = `${this.deviceName() || "this device"}, ${new Date().toLocaleString()}`;
       const notes = [];
       const types = new Set((await this.context.data.types.list()).map((type) => type.name));
 
+      // Peer snapshots already applied, by Drive file id -> modifiedTime, so an
+      // unchanged one is not downloaded and applied again every cycle.
+      // ponytail: memory only. The first run after every start reads
+      // everything again, which also covers a restored local database; a
+      // change in installed types (objects that were refused as unknown) resets it.
+      const typesKey = [...types].sort().join("\n");
+      if (this.seenTypes !== typesKey) {
+        this.seen = new Map();
+        this.seenTypes = typesKey;
+      }
+      const peers = this.context.storage.get("peers") ?? {};
+
       for (const file of files) {
         if (file.name === mine) continue;
-        let validated;
+        if (file.modifiedTime && this.seen.get(file.id) === file.modifiedTime) continue;
+        // One peer failing -- unreadable, or refused by the database -- must
+        // not stop the others or this device's own push, and must never be
+        // read as "that device deleted everything".
         try {
-          validated = validateSnapshot(await unseal(key, await this.google.download(file.id)), types);
+          const validated = validateSnapshot(await unseal(key, await this.google.download(file.id)), types);
+          peers[validated.deviceId] = {
+            name: validated.deviceName || peers[validated.deviceId]?.name || "",
+            writtenAt: validated.writtenAt,
+          };
+          if (validated.rejected.length) notes.push(`${file.name}: skipped ${validated.rejected.length} object(s)`);
+          const { apply, deferred } = planApply(validated, this.openObjectId);
+          skipped += deferred.length;
+          const peerBases = this.context.storage.get(`bases:${validated.deviceId}`) ?? {};
+          const peerTables = this.context.storage.get(`tableBases:${validated.deviceId}`) ?? {};
+          const resolved = planConflicts(apply.objects, localById, peerBases, peerTables, copyLabel);
+          const result = await this.context.data.sync.apply({
+            cursor: local.cursor,
+            objects: resolved.objects,
+            relations: apply.relations,
+            tombstones: apply.tombstones,
+            relation_tombstones: apply.relationTombstones,
+          });
+          pulled += result.appliedObjects;
+          conflicts += resolved.conflicts;
+          notes.push(...resolved.notes);
+          // Mirror Core's newest-wins so the next peer sees what is now here.
+          for (const object of resolved.objects) {
+            const current = localById.get(object.id);
+            if (!current || object.updated_at > current.updated_at) localById.set(object.id, object);
+          }
+          // Only after a successful apply: a base must never run ahead of
+          // what this device actually took in.
+          const next = nextBases(validated.objects, peerBases, peerTables, new Set(deferred.map((object) => object.id)));
+          this.context.storage.set(`bases:${validated.deviceId}`, next.bases);
+          this.context.storage.set(`tableBases:${validated.deviceId}`, next.tables);
+          // Something held back has to be offered again on the next run.
+          if (!deferred.length) this.seen.set(file.id, file.modifiedTime);
         } catch (error) {
-          // One unreadable peer file must not stop the others, and must never
-          // be read as "that device deleted everything".
           notes.push(`${file.name}: ${error.message}`);
-          continue;
         }
-        if (validated.rejected.length) notes.push(`${file.name}: skipped ${validated.rejected.length} object(s)`);
-        const { apply, deferred } = planApply(validated, this.openObjectId);
-        skipped += deferred.length;
-        const result = await this.context.data.sync.apply({
-          cursor: local.cursor,
-          objects: apply.objects,
-          relations: apply.relations,
-          tombstones: apply.tombstones,
-          relation_tombstones: apply.relationTombstones,
-        });
-        pulled += result.appliedObjects;
       }
+      this.context.storage.set("peers", peers);
 
       // Push last, so what we upload already includes anything just pulled.
       const fresh = await this.context.data.sync.export();
       const media = await this.syncMedia(fresh, key, notes);
-      const sealed = await seal(key, {
-        v: SNAPSHOT_VERSION,
-        deviceId: fresh.deviceId,
-        writtenAt: Date.now(),
+      const payload = {
         objects: fresh.objects,
         relations: fresh.relations,
         tombstones: fresh.tombstones,
         relationTombstones: fresh.relationTombstones,
-      });
-      await this.google.upload(mine, sealed, files.find((file) => file.name === mine)?.id);
+      };
+      const deviceName = this.deviceName();
+      const digest = await digestOf({ deviceName, ...payload });
+      const existing = files.find((file) => file.name === mine)?.id;
+      // Same content as this device's last upload (and the file is still
+      // there): nothing to send. Memory only, so every start pushes once.
+      const pushed = !existing || digest !== this.pushedDigest;
+      if (pushed) {
+        const sealed = await seal(key, { v: SNAPSHOT_VERSION, deviceId: fresh.deviceId, deviceName, writtenAt: Date.now(), ...payload });
+        await this.google.upload(mine, sealed, existing);
+        this.pushedDigest = digest;
+        this.context.storage.set("lastPush", Date.now());
+      }
 
       this.context.storage.set("lastSync", Date.now());
       const detail = [
         `${pulled} change(s) in`,
-        `${fresh.objects.length} object(s) out`,
+        conflicts ? `${conflicts} edited on both devices` : null,
+        pushed ? `${fresh.objects.length} object(s) out` : "nothing new to send",
         media.pulled ? `${media.pulled} image(s) in` : null,
         media.pushed ? `${media.pushed} image(s) out` : null,
         skipped ? `${skipped} held back (note is open)` : null,
       ].filter(Boolean).join(", ");
       this.setStatus("ok", `${detail}.${notes.length ? ` ${notes.join(" ")}` : ""}`);
-      return { pulled, skipped, notes, media };
+      return { pulled, skipped, notes, media, pushed, conflicts };
     } catch (error) {
       this.setStatus("error", error.message || String(error));
       throw error;
@@ -822,6 +1113,9 @@ const styles = `
 .nsync-error { color: var(--notible-danger); }
 .nsync-error { min-height: 1em; }
 .nsync-hint { color: var(--notible-faint) !important; font-size: 11px !important; }
+.nsync-devices { display: grid; gap: 6px; margin-top: 12px; }
+.nsync-device-name { max-width: 260px; }
+.nsync-peers { margin: 0; padding-left: 18px; font-size: 12px; }
 @media (max-width: 520px) {
   .nsync-pairing-entry { grid-template-columns: 1fr; }
   .nsync-schedule { grid-template-columns: auto minmax(0, 1fr); }
@@ -851,7 +1145,38 @@ function mountPanel(sync, container) {
     summaryText,
   ]);
   shell.append(summary);
+  // This device's name and every other device's last upload -- the answer
+  // to "did the other machine actually send it?", which the status line alone
+  // could not give. Lives outside render() like `status`, repainted with it.
+  const devices = element("div", { className: "nsync-devices" });
+  const nameInput = element("input", {
+    className: "nsync-device-name",
+    type: "text",
+    maxLength: 80,
+    placeholder: "e.g. Work laptop",
+    value: sync.deviceName(),
+  });
+  nameInput.onchange = () => { sync.context.storage.set("deviceName", nameInput.value.trim()); };
+  const peerList = element("ul", { className: "nsync-peers" });
+  devices.append(
+    element("label", { className: "nsync-hint", textContent: "This device is called" }),
+    nameInput,
+    element("p", { className: "nsync-hint", textContent: "Other devices — when each last sent its changes:" }),
+    peerList,
+  );
+  const paintPeers = () => {
+    const peers = Object.entries(sync.context.storage.get("peers") ?? {});
+    peerList.replaceChildren(...(peers.length
+      ? peers
+        .sort((a, b) => (b[1].writtenAt ?? 0) - (a[1].writtenAt ?? 0))
+        .map(([id, peer]) => element("li", {
+          textContent: `${peer.name || `Unnamed device (${id.slice(0, 6)})`}: ${peer.writtenAt ? new Date(peer.writtenAt).toLocaleString() : "unknown (older plugin version)"}`,
+        }))
+      : [element("li", { className: "nsync-hint", textContent: "None seen yet." })]));
+  };
+
   const paint = ({ state, text }) => {
+    paintPeers();
     status.dataset.state = state;
     const lastSync = sync.context.storage.get("lastSync");
     status.textContent = state === "idle" && lastSync
@@ -1000,6 +1325,7 @@ function mountPanel(sync, container) {
       element("div", { className: "nsync-actions" }, [now]),
       element("div", { className: "nsync-status" }, [
         status,
+        devices,
         !ready ? element("p", { className: "nsync-hint", textContent: "Connect Google Drive and pair this device to enable synchronisation." }) : null,
       ].filter(Boolean)),
     );
@@ -1014,7 +1340,7 @@ function mountPanel(sync, container) {
       ]),
       element("span", { className: "nsync-step__badge", textContent: "Optional" }),
     ]));
-    const toggle = element("input", { id: "nsync-auto-toggle", type: "checkbox", checked: Boolean(sync.context.storage.get("auto")) });
+    const toggle = element("input", { id: "nsync-auto-toggle", type: "checkbox", checked: sync.context.storage.get("auto") ?? true });
     const every = element("input", {
       className: "nsync-schedule__interval",
       type: "number", min: "1", max: "1440", inputmode: "numeric",
@@ -1032,11 +1358,11 @@ function mountPanel(sync, container) {
     auto.append(
       element("div", { className: "nsync-schedule" }, [
         toggle,
-        element("label", { className: "nsync-schedule__label", htmlFor: "nsync-auto-toggle", textContent: "Synchronise on a timer, every" }),
+        element("label", { className: "nsync-schedule__label", htmlFor: "nsync-auto-toggle", textContent: "Synchronise automatically, and at least every" }),
         every,
         element("span", { className: "nsync-schedule__suffix", textContent: "minutes" }),
       ]),
-      element("p", { className: "nsync-hint", textContent: "Off by default. Automatic runs still contact Google to check for changes." }),
+      element("p", { className: "nsync-hint", textContent: "On by default: also runs when Notible starts and about a minute after you change something. Each run contacts Google." }),
     );
     body.append(auto);
   };
@@ -1059,7 +1385,7 @@ export default {
   manifest: {
     id: "notible.sync",
     name: "Notible Sync",
-    version: "0.4.2",
+    version: "0.4.3",
     apiVersion: "1.7",
     description: "Replicate this workspace between your own machines through your own Google Drive. Snapshots are encrypted on this device before upload, so neither Notible nor Google can read them. Nothing is merged and nothing is deleted behind your back.",
     author: "Notible",
@@ -1071,7 +1397,12 @@ export default {
     this._sync = sync;
     this._disposables = [];
 
-    this._disposables.push(context.events.on("object.opened", (payload) => { sync.openObjectId = payload?.id ?? null; }));
+    // Only the note editor needs its open object held back. A table reloads
+    // itself when sync rewrites it (Tables 0.6.8), and with no "closed" event
+    // in Core a held-back table never synced at all.
+    this._disposables.push(context.events.on("object.opened", (payload) => {
+      sync.openObjectId = payload?.type === "table" ? null : payload?.id ?? null;
+    }));
 
     // Renders in this plugin's own detail pane on the Plugins screen (Core
     // draws `settings.register({ mount })` there), so it shows only when the
@@ -1095,16 +1426,35 @@ export default {
     const reschedule = () => {
       clearInterval(this._timer);
       this._timer = null;
-      if (!context.storage.get("auto")) return;
+      if (!(context.storage.get("auto") ?? true)) return;
       const minutes = Math.max(1, context.storage.get("intervalMinutes") ?? DEFAULT_INTERVAL_MINUTES);
       this._timer = setInterval(() => { sync.run().catch(() => {}); }, minutes * 60_000);
     };
     sync.onScheduleChanged = reschedule;
     reschedule();
+
+    // The timer alone left a machine's edits on that machine until the next
+    // tick, or forever with the timer off (the old default): a column added
+    // at work never reached Drive. So also: once shortly after start, and a
+    // minute after the last local change. Only when set up -- an automatic run
+    // that can only fail would just paint the status red.
+    const autoRun = () => {
+      if (!(context.storage.get("auto") ?? true) || !(sync.google.signedIn() && Boolean(context.storage.get("key")))) return;
+      sync.run().catch(() => {});
+    };
+    this._startTimer = setTimeout(autoRun, 10_000);
+    this._disposables.push(context.events.on("workspace.changed", () => {
+      // Our own apply announces workspace.changed too; that is not a local edit.
+      if (sync.applying) return;
+      clearTimeout(this._changeTimer);
+      this._changeTimer = setTimeout(autoRun, 60_000);
+    }));
   },
 
   onunload() {
     clearInterval(this._timer);
+    clearTimeout(this._startTimer);
+    clearTimeout(this._changeTimer);
     this._timer = null;
     for (const disposable of this._disposables ?? []) disposable.dispose?.();
     this._disposables = [];

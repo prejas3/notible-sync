@@ -1,7 +1,7 @@
 {
   "id": "notible.sync",
   "name": "Notible Sync",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "apiVersion": "1.7",
   "minCoreVersion": "0.80.0",
   "description": "Replicate this workspace between your own machines through your own Google Drive. Snapshots are encrypted on this device before upload, so neither Notible nor Google can read them. Nothing is merged and nothing is deleted behind your back.",

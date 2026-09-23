@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import plugin, { encodeKey, decodeKey, seal, unseal, safeParse, validateSnapshot, planApply, gunzip, mediaNamesIn, mediaNamesOf } from "./main.js";
+import plugin, { encodeKey, decodeKey, seal, unseal, safeParse, validateSnapshot, planApply, gunzip, mediaNamesIn, mediaNamesOf, mergeTableProps, planConflicts, objectHash } from "./main.js";
 
 // --- identity
 // Core loads plugin.json, shows it to the user, then refuses the entry module
@@ -204,5 +204,38 @@ assert.deepEqual(planned.apply.objects.map((item) => item.id), ["other"], "the o
 assert.deepEqual(planned.deferred.map((item) => item.id), ["open"]);
 assert.equal(planApply(two, null).deferred.length, 0, "nothing is deferred when no note is open");
 assert.equal(planApply(two, "unrelated").apply.objects.length, 2);
+
+// --- conflicts: a table merges cell by cell; anything else keeps the newer
+// version and the device whose own version lost saves it as a copy.
+{
+  const props = (columns, rows) => JSON.stringify({ columns, rows });
+  const base = props([{ id: "c1", name: "A", type: "text" }], [{ id: "r1", cells: { c1: "a" } }, { id: "r2", cells: { c1: "b" } }]);
+  const mine = props([{ id: "c1", name: "A", type: "text" }, { id: "c2", name: "B", type: "text" }], [{ id: "r1", cells: { c1: "a", c2: "x" } }, { id: "r2", cells: { c1: "b", c2: "" } }]);
+  const theirs = props([{ id: "c1", name: "A", type: "text" }], [{ id: "r1", cells: { c1: "a" } }, { id: "r2", cells: { c1: "edited" } }]);
+  const clean = mergeTableProps(base, mine, theirs, false);
+  const out = JSON.parse(clean.props);
+  assert.deepEqual(out.columns.map((c) => c.id), ["c1", "c2"], "a column added on one side survives");
+  assert.equal(out.rows[0].cells.c2, "x");
+  assert.equal(out.rows[1].cells.c1, "edited", "a cell edited on the other side survives");
+  assert.equal(clean.conflicts, 0);
+  assert.equal(mergeTableProps(base, mine, theirs, true).props, clean.props, "both devices merge to the same bytes");
+
+  const clash = mergeTableProps(base, props([{ id: "c1", name: "A", type: "text" }], [{ id: "r1", cells: { c1: "mine" } }, { id: "r2", cells: { c1: "b" } }]), props([{ id: "c1", name: "A", type: "text" }], [{ id: "r1", cells: { c1: "theirs" } }, { id: "r2", cells: { c1: "b" } }]), false);
+  assert.equal(JSON.parse(clash.props).rows[0].cells.c1, "theirs", "same cell on both: newer wins");
+  assert.equal(clash.localLost, true, "and this device owes a copy");
+  assert.equal(mergeTableProps(base, "not json", theirs, true), null, "unreadable table falls back to a copy");
+
+  const note = (content, updated_at) => ({ id: "n", type: "note", title: "N", content, props: "{}", created_at: 1, updated_at, archived_at: null, trashed_at: null, parent_id: null });
+  const bases = { n: objectHash(note("old", 1)) };
+  const lost = planConflicts([note("theirs", 3)], new Map([["n", note("mine", 2)]]), bases, {}, "Home");
+  assert.equal(lost.conflicts, 1);
+  assert.equal(lost.objects.length, 2, "remote applied + a copy of ours");
+  assert.equal(lost.objects[1].content, "mine");
+  assert.notEqual(lost.objects[1].id, "n");
+  const won = planConflicts([note("theirs", 2)], new Map([["n", note("mine", 3)]]), bases, {}, "Home");
+  assert.equal(won.objects.length, 0, "ours is newer: nothing applied, no copy (the other side copies)");
+  assert.equal(planConflicts([note("theirs", 3)], new Map([["n", note("old", 1)]]), bases, {}, "Home").conflicts, 0, "one-sided edit is no conflict");
+  assert.equal(planConflicts([note("theirs", 3)], new Map([["n", note("mine", 2)]]), {}, {}, "Home").objects.length, 1, "no base yet: plain newest-wins");
+}
 
 console.log("Notible Sync self-check passed.");

@@ -67,7 +67,8 @@ danych, a osierocony obraz kosztuje miejsce.
 - **Nie synchronizuje załączników innych niż obrazy.** Wklejone obrazy
   jeżdżą od 0.2.0 (wymaga Notible 0.56.0), reszta plików nie.
 - **Nie scala duplikatów.** Osobna funkcja, jeszcze nie napisana.
-- **Nie jest czasem rzeczywistym.** Ręcznie albo na timerze.
+- **Nie jest czasem rzeczywistym.** Domyślnie automatycznie: przy starcie, ok. minutę po zmianie i co N minut (można wyłączyć). Panel pokazuje, kiedy każde urządzenie ostatnio wysłało zmiany.
+- **Edycja na dwóch urządzeniach naraz.** Tabele scalają się po komórkach (kolumna dodana tu i komórka zmieniona tam przetrwają obie). Wszystko inne, albo ta sama komórka zmieniona po obu stronach: zostaje nowsza wersja, a przegrana ląduje obok jako „(conflict copy — urządzenie, data)”. Kopię robi tylko urządzenie, którego wersja przegrała. Wykrywanie działa od drugiego sync na tej wersji pluginu (wcześniej nie ma punktu odniesienia).
 
 ## Rzeczy, które musisz wiedzieć, zanim to włączysz
 
