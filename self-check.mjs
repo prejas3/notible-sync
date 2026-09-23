@@ -236,6 +236,12 @@ assert.equal(planApply(two, "unrelated").apply.objects.length, 2);
   assert.equal(won.objects.length, 0, "ours is newer: nothing applied, no copy (the other side copies)");
   assert.equal(planConflicts([note("theirs", 3)], new Map([["n", note("old", 1)]]), bases, {}, "Home").conflicts, 0, "one-sided edit is no conflict");
   assert.equal(planConflicts([note("theirs", 3)], new Map([["n", note("mine", 2)]]), {}, {}, "Home").objects.length, 1, "no base yet: plain newest-wins");
+  // Automations logs a check into the project on each device on its own; that alone is not an edit.
+  const project = (log, updated_at) => ({ ...note("same", updated_at), props: JSON.stringify({ status: "open", _automationLog: log }) });
+  const logBases = { n: objectHash(project([{ id: "base" }], 1)) };
+  const logOnly = planConflicts([project([{ id: "theirs" }], 3)], new Map([["n", project([{ id: "mine" }], 2)]]), logBases, {}, "Home");
+  assert.equal(logOnly.conflicts, 0, "a run log written on both devices is no conflict");
+  assert.equal(logOnly.objects.length, 1, "no conflict copy for a run log");
 }
 
 console.log("Notible Sync self-check passed.");
