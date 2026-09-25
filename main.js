@@ -508,9 +508,10 @@ export function planConflicts(remoteObjects, localById, bases, tableBases, copyL
   const objects = [];
   const notes = [];
   let conflicts = 0;
-  const copyOf = (local) => ({
+  const copyOf = (local, trashedAt = local.trashed_at) => ({
     ...local,
     id: crypto.randomUUID(),
+    trashed_at: trashedAt,
     title: `${local.title || "Untitled"} (conflict copy — ${copyLabel})`.slice(0, LIMITS.title),
     created_at: now,
     updated_at: now,
@@ -531,7 +532,14 @@ export function planConflicts(remoteObjects, localById, bases, tableBases, copyL
     const stamp = Math.max(local.updated_at, remote.updated_at) + 1;
     const title = remote.title || local.title || "Untitled";
 
-    const merged = remote.type === "table" && local.type === "table" && typeof tableBases[remote.id] === "string"
+    // A stale base must not turn a trash-only change into a duplicate.
+    if (objectHash({ ...local, trashed_at: null }) === objectHash({ ...remote, trashed_at: null })) {
+      if (!localNewer) objects.push(remote.updated_at > local.updated_at ? remote : { ...remote, updated_at: stamp });
+      notes.push('Trash state resolved using the newer version.');
+      continue;
+    }
+
+    const merged = local.trashed_at == null && remote.trashed_at == null && remote.type === "table" && local.type === "table" && typeof tableBases[remote.id] === "string"
       ? mergeTableProps(tableBases[remote.id], local.props, remote.props, localNewer)
       : null;
     if (merged) {
@@ -551,8 +559,9 @@ export function planConflicts(remoteObjects, localById, bases, tableBases, copyL
     }
     objects.push(remote.updated_at > local.updated_at ? remote : { ...remote, updated_at: stamp });
     // A version that was in the trash is not worth resurrecting as a copy.
-    if (!local.trashed_at) objects.push(copyOf(local));
-    notes.push(`"${title}": edited on both devices; the other device's newer version kept, this device's saved as a conflict copy.`);
+    const savedCopy = local.trashed_at == null;
+    if (savedCopy) objects.push(copyOf(local, remote.trashed_at ?? null));
+    notes.push(`"${title}": edited on both devices; the other device's newer version kept, ${savedCopy ? (remote.trashed_at != null ? "this device's saved as a conflict copy in trash" : "this device's saved as a conflict copy") : "this device's trashed version not copied"}.`);
   }
   return { objects, notes, conflicts };
 }
@@ -1399,7 +1408,7 @@ export default {
   manifest: {
     id: "notible.sync",
     name: "Notible Sync",
-    version: "0.4.4",
+    version: "0.4.5",
     apiVersion: "1.7",
     description: "Replicate this workspace between your own machines through your own Google Drive. Snapshots are encrypted on this device before upload, so neither Notible nor Google can read them. Nothing is merged and nothing is deleted behind your back.",
     author: "Notible",
