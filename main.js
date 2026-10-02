@@ -1408,9 +1408,9 @@ export default {
   manifest: {
     id: "notible.sync",
     name: "Notible Sync",
-    version: "0.4.5",
+    version: "0.4.6",
     apiVersion: "1.7",
-    description: "Replicate this workspace between your own machines through your own Google Drive. Snapshots are encrypted on this device before upload, so neither Notible nor Google can read them. Nothing is merged and nothing is deleted behind your back.",
+    description: "Keep this workspace the same on your own computers through your Google Drive. Everything is encrypted on your computer first, so neither Notible nor Google can read it.",
     author: "Notible",
     permissions: ["data.sync", "data.read", "workspace.ui", "network"],
   },
@@ -1438,7 +1438,7 @@ export default {
 
     this._disposables.push(context.commands.register({
       id: "now",
-      name: "Sync: synchronise now",
+      name: "Secure Sync: sync now",
       description: "Push this device's snapshot and take in the others.",
       execute: () => sync.run(),
     }));

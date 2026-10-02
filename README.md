@@ -112,7 +112,6 @@ Pokrywa tożsamość manifestu, kodowanie klucza, round-trip zaszyfrowanej
 migawki, odrzucenie migawki podpisanej innym kluczem i migawki ze zmienionym
 bitem, walidację cudzych danych oraz odkładanie zmian do otwartej notatki.
 
-## Install
+## 0.4.5 ? trash conflict fix
 
-In Notible: **Settings -> Plugins -> Market**, then install "Notible Sync".
-This repo is the source; the market pulls `plugin.json` + `notible.sync.zip` from the latest GitHub Release.
+Trash-only changes no longer create conflict copies, including with stale sync bases. Genuine losing edits remain recoverable in trash when the winning version is trashed. Trashed tables are not merged. Update the plugin on every device; Core 0.90.2 also includes the automation repeat-log fix.
