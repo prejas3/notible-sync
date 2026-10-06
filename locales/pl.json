@@ -1,0 +1,27 @@
+{
+  "strings": {
+    "Sync brought back '{title}': it was edited on {device} after you deleted it.": "Synchronizacja przywróciła „{title}”: po usunięciu była edytowana na urządzeniu {device}.",
+    "Sync kept your edit to '{title}': it had been deleted on {device}.": "Synchronizacja zachowała Twoją zmianę w „{title}”: notatkę usunięto na urządzeniu {device}.",
+    "Sync kept your edit to '{title}', but {device} moved it to the trash.": "Synchronizacja zachowała Twoją zmianę w „{title}”, ale notatkę przeniesiono do kosza na urządzeniu {device}.",
+    "'{title}' was moved on {device} too; that placement was kept.": "„{title}” przeniesiono też na urządzeniu {device}; zostało tamto położenie.",
+    "'{title}' was changed on {device} too, so Sync kept your version as '{copy}'.": "„{title}” zmieniono też na urządzeniu {device}, więc Twoja wersja została zachowana jako „{copy}”.",
+    "'{title}' was changed on {device} too, so Sync kept that version as '{copy}'.": "„{title}” zmieniono też na urządzeniu {device}, więc tamta wersja została zachowana jako „{copy}”.",
+    "'{title}' was changed on {device} too, so Sync kept your versions as {count} conflict copies, such as '{copy}'.": "„{title}” zmieniono też na urządzeniu {device}, więc Twoje wersje zostały zachowane jako kopie konfliktowe ({count}), np. „{copy}”.",
+    "'{title}' was changed on {device} too, so Sync kept those versions as {count} conflict copies, such as '{copy}'.": "„{title}” zmieniono też na urządzeniu {device}, więc tamte wersje zostały zachowane jako kopie konfliktowe ({count}), np. „{copy}”.",
+    "Sync merged conflicting changes in {count} notes: {names}.": "Synchronizacja scaliła sprzeczne zmiany w notatkach ({count}): {names}.",
+    "Sync merged conflicting changes in {count} notes: {names} and {more} more.": "Synchronizacja scaliła sprzeczne zmiany w notatkach ({count}): {names} i jeszcze {more}.",
+    "another device": "bez nazwy",
+    "Open": "Otwórz",
+    "Details": "Szczegóły",
+    "'{title}' was archived or unarchived on {device} too; that change was kept.": "„{title}” zarchiwizowano lub przywrócono z archiwum też na urządzeniu {device}; została tamta zmiana.",
+    "Conflict copies kept: {copies}.": "Zachowane kopie konfliktowe: {copies}.",
+    "Conflict copies kept: {copies} and {more} more.": "Zachowane kopie konfliktowe: {copies} i jeszcze {more}.",
+    "Merge notices": "Powiadomienia o scalaniu",
+    "Show sync merge notices": "Pokazuj powiadomienia o scalaniu przy synchronizacji",
+    "A short notice after a sync that kept another device's version over yours, brought back a note you deleted, or saved a conflict copy.": "Krótkie powiadomienie po synchronizacji, która zachowała wersję z innego urządzenia zamiast Twojej, przywróciła usuniętą przez Ciebie notatkę albo zapisała kopię konfliktową.",
+    "On": "Wł.",
+    "Off": "Wył.",
+    "Resolve conflict": "Rozwiąż konflikt",
+    "Review conflicts": "Przejrzyj konflikty"
+  }
+}

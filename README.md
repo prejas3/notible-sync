@@ -68,7 +68,7 @@ danych, a osierocony obraz kosztuje miejsce.
   jeżdżą od 0.2.0 (wymaga Notible 0.56.0), reszta plików nie.
 - **Nie scala duplikatów.** Osobna funkcja, jeszcze nie napisana.
 - **Nie jest czasem rzeczywistym.** Domyślnie automatycznie: przy starcie, ok. minutę po zmianie i co N minut (można wyłączyć). Panel pokazuje, kiedy każde urządzenie ostatnio wysłało zmiany.
-- **Edycja na dwóch urządzeniach naraz.** Tabele scalają się po komórkach (kolumna dodana tu i komórka zmieniona tam przetrwają obie). Wszystko inne, albo ta sama komórka zmieniona po obu stronach: zostaje nowsza wersja, a przegrana ląduje obok jako „(conflict copy — urządzenie, data)”. Kopię robi tylko urządzenie, którego wersja przegrała. Wykrywanie działa od drugiego sync na tej wersji pluginu (wcześniej nie ma punktu odniesienia).
+- **Edycja na dwóch urządzeniach naraz.** Notatka edytowana na dwóch urządzeniach między synchronizacjami zwykle zachowuje obie zmiany: scalają się różne akapity, tytuły i właściwości, a tabele po komórkach. Kopia konfliktu („(conflict copy — urządzenie, data)”) powstaje, gdy ta sama linia, ten sam tytuł lub ta sama właściwość zmieniła się po obu stronach albo gdy plugin nie umie ustalić, która wersja była pierwsza (np. po resecie lub przywróceniu kopii, bez zapamiętanego wspólnego punktu wyjścia, przy bogatej treści lub po wielu wymianach). Kopie są deterministyczne i może je utworzyć którekolwiek urządzenie, więc na obu wyglądają tak samo. Urządzenia ze starszą wersją pluginu zachowują się jak dawniej (zostaje nowsza wersja).
 
 ## Rzeczy, które musisz wiedzieć, zanim to włączysz
 
@@ -115,3 +115,7 @@ bitem, walidację cudzych danych oraz odkładanie zmian do otwartej notatki.
 ## 0.4.5 ? trash conflict fix
 
 Trash-only changes no longer create conflict copies, including with stale sync bases. Genuine losing edits remain recoverable in trash when the winning version is trashed. Trashed tables are not merged. Update the plugin on every device; Core 0.90.2 also includes the automation repeat-log fix.
+
+## 0.4.7 — scalanie trójstronne
+
+Notatka zmieniona na dwóch urządzeniach między synchronizacjami zachowuje teraz obie zmiany, jeśli dotyczą różnych linii, a to samo działa dla tytułów i właściwości. Plugin pamięta krótką historię wersji każdej notatki w magazynie pluginu w Core (wymaga Notible 0.95.0, API 1.25) i z niej wyznacza wspólny punkt wyjścia. Kopia konfliktu powstaje tylko wtedy, gdy ta sama linia, tytuł lub właściwość zmieniły się po obu stronach, albo gdy nie da się ustalić kolejności wersji; wtedy działa dawna reguła „nowsza wygrywa, przegrana obok”. Zaktualizuj plugin na każdym urządzeniu osobno.

@@ -1,9 +1,9 @@
 {
   "id": "notible.sync",
   "name": "Notible Sync",
-  "version": "0.4.6",
-  "apiVersion": "1.7",
-  "minCoreVersion": "0.80.0",
+  "version": "0.4.7",
+  "apiVersion": "1.26",
+  "minCoreVersion": "0.95.0",
   "description": "Keep this workspace the same on your own computers through your Google Drive. Everything is encrypted on your computer first, so neither Notible nor Google can read it.",
   "author": "Notible",
   "entry": "main.js",
@@ -13,5 +13,8 @@
     "workspace.ui",
     "network"
   ],
+  "locales": {
+    "pl": "locales/pl.json"
+  },
   "guide": "Open **Settings → Plugins → Notible Sync** and sign in with Google.\n\nOn your first computer, start syncing. On the next one, sign in with the same Google account and pair it with the first: the key stays on your computers, never on Drive.\n\nSync runs in the background; **Secure Sync: sync now** in Hotkeys runs it at once. Nothing is merged or deleted behind your back: a change made on two computers at once keeps both copies."
 }

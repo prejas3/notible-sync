@@ -7,7 +7,17 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import plugin, { encodeKey, decodeKey, seal, unseal, safeParse, validateSnapshot, planApply, gunzip, mediaNamesIn, mediaNamesOf, mergeTableProps, planConflicts, objectHash } from "./main.js";
+import plugin, { Sync, SharedFolder, encodeKey, decodeKey, seal, unseal, safeParse, validateSnapshot, planApply, gunzip, mediaNamesIn, mediaNamesOf, mergeTableProps, mergeEmbeddedTables, nextBases, planConflicts, objectHash } from "./main.js";
+// SYNC-MERGE-A (Hive #5): main.js carries a copy of plugins/shared/sync-merge.js.
+import { inlinedBlock, sourceBlock } from "../../scripts/sync-merge-inline.mjs";
+import { checkNotices } from "../shared/sync-notice.check.mjs";
+import { checkSharedFolder } from "../shared/sync-transport.check.mjs";
+assert.equal(
+  inlinedBlock(readFileSync(new URL("./main.js", import.meta.url), "utf8").replace(/\r\n/g, "\n")),
+  sourceBlock(),
+  "main.js is out of date: run node scripts/sync-merge-inline.mjs",
+);
+await import("../shared/sync-merge.check.mjs");
 
 // --- identity
 // Core loads plugin.json, shows it to the user, then refuses the entry module
@@ -219,6 +229,7 @@ assert.equal(planApply(two, "unrelated").apply.objects.length, 2);
   assert.equal(out.rows[1].cells.c1, "edited", "a cell edited on the other side survives");
   assert.equal(clean.conflicts, 0);
   assert.equal(mergeTableProps(base, mine, theirs, true).props, clean.props, "both devices merge to the same bytes");
+  assert.equal(mergeTableProps(base, theirs, mine, true).props, clean.props, "swapping local and remote gives the same bytes");
 
   const clash = mergeTableProps(base, props([{ id: "c1", name: "A", type: "text" }], [{ id: "r1", cells: { c1: "mine" } }, { id: "r2", cells: { c1: "b" } }]), props([{ id: "c1", name: "A", type: "text" }], [{ id: "r1", cells: { c1: "theirs" } }, { id: "r2", cells: { c1: "b" } }]), false);
   assert.equal(JSON.parse(clash.props).rows[0].cells.c1, "theirs", "same cell on both: newer wins");
@@ -235,7 +246,7 @@ assert.equal(planApply(two, "unrelated").apply.objects.length, 2);
   const won = planConflicts([note("theirs", 2)], new Map([["n", note("mine", 3)]]), bases, {}, "Home");
   assert.equal(won.objects.length, 0, "ours is newer: nothing applied, no copy (the other side copies)");
   assert.equal(planConflicts([note("theirs", 3)], new Map([["n", note("old", 1)]]), bases, {}, "Home").conflicts, 0, "one-sided edit is no conflict");
-  assert.equal(planConflicts([note("theirs", 3)], new Map([["n", note("mine", 2)]]), {}, {}, "Home").objects.length, 1, "no base yet: plain newest-wins");
+  assert.equal(planConflicts([note("theirs", 3)], new Map([["n", note("mine", 2)]]), {}, {}, "Home").objects.length, 2, "no base yet (Hive #14, F3): unknown history, the older row is kept as a copy");
   const trashOnly = planConflicts([{ ...note("mine", 3), trashed_at: 3 }], new Map([["n", note("mine", 2)]]), bases, {}, "Home");
   assert.equal(trashOnly.objects.length, 1, "trash-only difference with stale base must not duplicate");
   assert.equal(trashOnly.objects[0].trashed_at, 3);
@@ -244,13 +255,38 @@ assert.equal(planApply(two, "unrelated").apply.objects.length, 2);
   assert.equal(trashEdit.objects[1].content, "mine");
   assert.equal(trashEdit.objects[1].trashed_at, 3, "preserve losing edits inside trash");
   const localTrash = planConflicts([note("theirs", 3)], new Map([["n", { ...note("mine", 2), trashed_at: 2 }]]), bases, {}, "Home");
-  assert.equal(localTrash.objects.length, 1);
-  assert.ok(!localTrash.notes[0].includes("saved as a conflict copy"));
+  // Hive #14 (F4): a trashed version with its own edit is kept, as a copy in the trash.
+  assert.equal(localTrash.objects.length, 2);
+  assert.equal(localTrash.objects[1].content, "mine");
+  assert.equal(localTrash.objects[1].trashed_at, 2);
+  assert.ok(localTrash.notes[0].includes("saved as a conflict copy in trash"));
   const tableMine = { ...note("", 2), type: "table", props: mine };
   const tableTrash = { ...note("", 3), type: "table", props: theirs, trashed_at: 3 };
   const trashTable = planConflicts([tableTrash], new Map([["n", tableMine]]), { n: objectHash({ ...tableMine, props: base }) }, { n: base }, "Home");
   assert.equal(trashTable.objects[0].props, theirs, "do not merge a trashed table");
   assert.ok(trashTable.objects.every((item) => item.trashed_at === 3));
+
+  // E14B-SYNC-FENCE (Hive #2): a table embedded in a note merges cell by cell.
+  const doc = (lines) => JSON.stringify({ type: "doc", content: lines.map((text) => (text ? { type: "paragraph", content: [{ type: "text", text }] } : { type: "paragraph" })) });
+  const fence = (a, b) => ["```notible-table", '{"v":1,"columns":[{"id":"c1","name":"A","type":"text"}]}', `{"id":"r1","cells":{"c1":"${a}"}}`, `{"id":"r2","cells":{"c1":"${b}"}}`, "```"];
+  const baseBody = doc(["Intro", "", ...fence("a", "b"), "after"]);
+  const embedMerged = mergeEmbeddedTables(baseBody, doc(["Intro", "", ...fence("mine", "b"), "after"]), doc(["Intro", "", ...fence("a", "theirs"), "after"]), true);
+  assert.equal(embedMerged.content, doc(["Intro", "", ...fence("mine", "theirs"), "after"]), "different cells of an embedded table merge, text around it untouched");
+  assert.equal(embedMerged.conflicts, 0);
+  assert.equal(mergeEmbeddedTables(baseBody, doc(["Changed", "", ...fence("mine", "b"), "after"]), doc(["Intro", "", ...fence("a", "theirs"), "after"]), true), null, "text around it differs: conflict copy");
+  assert.equal(mergeEmbeddedTables(baseBody, doc(["Intro", "", ...fence("mine", "b"), "after", ...fence("x", "y")]), doc(["Intro", "", ...fence("a", "theirs"), "after"]), true), null, "a block added on one side: conflict copy");
+  assert.equal(mergeEmbeddedTables(doc(["plain"]), doc(["mine"]), doc(["theirs"]), true), null, "no embedded table: not this merge");
+  const marked = JSON.stringify({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Intro", marks: [{ type: "bold" }] }] }] });
+  assert.equal(mergeEmbeddedTables(baseBody, marked, baseBody, true), null, "rich (marked) content is never rebuilt");
+  const clashEmbed = mergeEmbeddedTables(baseBody, doc(["Intro", "", ...fence("mine", "b"), "after"]), doc(["Intro", "", ...fence("theirs", "b"), "after"]), false);
+  assert.equal(clashEmbed.localLost, true, "same cell on both: this device owes a copy");
+  const embedPlan = planConflicts([note(doc(["Intro", "", ...fence("a", "theirs"), "after"]), 3)], new Map([["n", note(doc(["Intro", "", ...fence("mine", "b"), "after"]), 2)]]), { n: objectHash(note(baseBody, 1)) }, { n: baseBody }, "Home");
+  assert.equal(embedPlan.objects.length, 1, "merged in place, no conflict copy");
+  assert.ok(embedPlan.objects[0].content.includes("mine") && embedPlan.objects[0].content.includes("theirs"));
+  assert.ok(embedPlan.objects[0].updated_at > 3, "newer than both, so it wins everywhere");
+  const embedBases = nextBases([note(baseBody, 1), { ...note(doc(["plain"]), 1), id: "p" }], {}, {}, new Set());
+  assert.equal(embedBases.tables.n, baseBody, "a note with an embedded table keeps its content as the base");
+  assert.equal(embedBases.tables.p, undefined, "a plain note does not");
   // Automations logs a check into the project on each device on its own; that alone is not an edit.
   const project = (log, updated_at) => ({ ...note("same", updated_at), props: JSON.stringify({ status: "open", _automationLog: log }) });
   const logBases = { n: objectHash(project([{ id: "base" }], 1)) };
@@ -258,5 +294,26 @@ assert.equal(planApply(two, "unrelated").apply.objects.length, 2);
   assert.equal(logOnly.conflicts, 0, "a run log written on both devices is no conflict");
   assert.equal(logOnly.objects.length, 1, "no conflict copy for a run log");
 }
+
+// SYNC-MERGE-A (Hive #5): run() goes through the shared lineage path.
+{
+  const src = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  const run = src.slice(src.indexOf("  async run() {"), src.indexOf("\n  }\n", src.indexOf("  async run() {")));
+  for (const call of ["openLineage(", "readLineage(", "pullPeer(", "pushLineage("]) assert.ok(run.includes(call), `run() must call ${call}`);
+  assert.ok(!run.includes("planConflicts("), "run() no longer calls planConflicts directly");
+  const manifest = JSON.parse(readFileSync(new URL("./plugin.json", import.meta.url), "utf8"));
+  assert.equal(manifest.apiVersion, "1.26");
+  assert.equal(manifest.minCoreVersion, "0.95.0");
+  assert.match(src, /apiVersion: "1\.26"/);
+  const forget = src.slice(src.indexOf("  async forgetLineage() {"), src.indexOf("\n  }\n", src.indexOf("  async forgetLineage() {")));
+  assert.ok(forget.includes("resetLineage(this.context.store)") && forget.includes("markReseed("), "forgetLineage wipes and marks a re-seed");
+  assert.ok(forget.includes("await this.running"), "forgetLineage waits for the in-flight run");
+  assert.ok(!run.includes("forgetLineage("), "run() must never call forgetLineage (deadlock)");
+  assert.ok((src.match(/forgetLineage\(\)/g) ?? []).length - 1 >= 3, "forgetLineage call sites (sign-out, re-pair)");
+}
+
+// SYNC-NOTICE (Hive #11): one grouped notice per cycle; the setting turns it off.
+await checkNotices(Sync, "notible.sync", new URL("./", import.meta.url));
+await checkSharedFolder(SharedFolder);
 
 console.log("Notible Sync self-check passed.");
