@@ -14,6 +14,12 @@
  * them under plain node; the plugin itself is the default export.
  */
 
+// I18N (Hive #28): every UI string goes through t(); Polish is in
+// locales/pl.json (checked by scripts/plugin-locale-check.mjs). English until
+// onload() hands t over to Core's translator, which also follows a language
+// change. tr() only marks a module-level label that is passed to t() later.
+let t = (key, values) => (values ? key.replace(/\{(\w+)\}/g, (whole, name) => (name in values ? String(values[name]) : whole)) : key);
+
 // No client id and no client secret live here any more. As of API 1.7 Core
 // owns both, together with the scope they may ask for, and this plugin names
 // a provider instead (see PROVIDER below). That is not tidiness: a command
@@ -345,6 +351,11 @@ export async function digestOf(value) {
 // Simple. This file is the source; `node scripts/sync-merge-inline.mjs`
 // copies it into both main.js files between the sync-merge markers, and both
 // self-checks fail when a copy drifts. Pure: no imports, no outside names.
+
+// I18N (Hive #28): marks a notice sentence that mergeNotice() passes to t()
+// later, so scripts/plugin-locale-check.mjs sees it. A function declaration on
+// purpose: main.js code above the inlined block uses it too.
+function tr(key) { return key; }
 
 /** Same as LIMITS.title in main.js; a conflict copy's title is cut to it. */
 export const MERGE_TITLE_LIMIT = 4_000;
@@ -1895,18 +1906,18 @@ export async function pushLineage(lin, objects, deviceName) {
 /** Core cuts a notice at 300 characters; a combined one stays under it. */
 const NOTICE_CAP = 300;
 const NOTICE = {
-  restored: "Sync brought back '{title}': it was edited on {device} after you deleted it.",
-  "kept-edit": "Sync kept your edit to '{title}': it had been deleted on {device}.",
-  "edit-in-trash": "Sync kept your edit to '{title}', but {device} moved it to the trash.",
-  moved: "'{title}' was moved on {device} too; that placement was kept.",
-  archived: "'{title}' was archived or unarchived on {device} too; that change was kept.",
-  copy: "'{title}' was changed on {device} too, so Sync kept your version as '{copy}'.",
-  theirs: "'{title}' was changed on {device} too, so Sync kept that version as '{copy}'.",
+  restored: tr("Sync brought back '{title}': it was edited on {device} after you deleted it."),
+  "kept-edit": tr("Sync kept your edit to '{title}': it had been deleted on {device}."),
+  "edit-in-trash": tr("Sync kept your edit to '{title}', but {device} moved it to the trash."),
+  moved: tr("'{title}' was moved on {device} too; that placement was kept."),
+  archived: tr("'{title}' was archived or unarchived on {device} too; that change was kept."),
+  copy: tr("'{title}' was changed on {device} too, so Sync kept your version as '{copy}'."),
+  theirs: tr("'{title}' was changed on {device} too, so Sync kept that version as '{copy}'."),
 };
 // SYNC-NOTICE fix round 2 (Hive #20): several copies of one note from one device are one sentence.
 const NOTICE_MANY = {
-  copy: "'{title}' was changed on {device} too, so Sync kept your versions as {count} conflict copies, such as '{copy}'.",
-  theirs: "'{title}' was changed on {device} too, so Sync kept those versions as {count} conflict copies, such as '{copy}'.",
+  copy: tr("'{title}' was changed on {device} too, so Sync kept your versions as {count} conflict copies, such as '{copy}'."),
+  theirs: tr("'{title}' was changed on {device} too, so Sync kept those versions as {count} conflict copies, such as '{copy}'."),
 };
 
 /** One notice for a cycle's merge events: { message, id, left } (id: the note to open, or null;
@@ -2018,7 +2029,7 @@ class Google {
   async token() {
     if (this.accessToken && Date.now() < this.expiresAt - 60_000) return this.accessToken;
     const refresh = this.refreshToken;
-    if (!refresh) throw new Error("Not signed in to Google.");
+    if (!refresh) throw new Error(t("Not signed in to Google."));
     // The refresh exchange needs the client secret, which now lives in Core.
     let granted;
     try {
@@ -2034,7 +2045,7 @@ class Google {
       // revoked in their Google account.
       this.storage.delete("refreshToken");
       this.accessToken = null;
-      throw new Error(`Google would not renew this device's access, so it has been signed out. Sign in again. (${error.message || error})`);
+      throw new Error(t("Google would not renew this device's access, so it has been signed out. Sign in again. ({reason})", { reason: error.message || error }));
     }
     this.accessToken = granted.accessToken;
     this.expiresAt = Date.now() + (granted.expiresIn || 3600) * 1000;
@@ -2211,7 +2222,7 @@ export class Sync {
     this.remote = new Google(context.storage, context.oauth);
     this.applying = false;
     this.openObjectId = null;
-    this.status = { state: "idle", text: "Never synchronised." };
+    this.status = { state: "idle", text: t("Never synchronised.") };
     this.listeners = new Set();
   }
 
@@ -2242,7 +2253,7 @@ export class Sync {
       const left = new Set(notice.left ?? []);
       const copyIds = [...new Set([...pending.values()].filter(e=>e.kind === "copy" && e.copyId && !left.has(e)).map(e=>e.copyId))];
       const action = copyIds.length && typeof context.ui.openSyncConflicts === "function"
-        ? { label: t(copyIds.length === 1 ? "Resolve conflict" : "Review conflicts"), onSelect: () => context.ui.openSyncConflicts(copyIds.length === 1 ? copyIds[0] : undefined) }
+        ? { label: copyIds.length === 1 ? t("Resolve conflict") : t("Review conflicts"), onSelect: () => context.ui.openSyncConflicts(copyIds.length === 1 ? copyIds[0] : undefined) }
         : notice.id
         ? { label: t("Open"), onSelect: () => context.ui.openObject(notice.id) }
         : { label: t("Details"), onSelect: () => context.ui.openPluginSettings("notible.sync") };
@@ -2260,7 +2271,7 @@ export class Sync {
 
   keyBytes() {
     const stored = this.context.storage.get("key");
-    if (!stored) throw new Error("This device is not paired yet.");
+    if (!stored) throw new Error(t("This device is not paired yet."));
     return decodeKey(stored);
   }
 
@@ -2342,7 +2353,7 @@ export class Sync {
       } catch (error) {
         // The likeliest cause by far: the user has not switched image
         // reading on. Say it once, not once per file.
-        notes.push(`images not sent: ${error.message}`);
+        notes.push(t("images not sent: {reason}", { reason: error.message }));
         break;
       }
     }
@@ -2358,7 +2369,7 @@ export class Sync {
     // merges already committed when a later step (export, media, upload) fails.
     const events = [];
     try {
-      this.setStatus("busy", "Synchronising…");
+      this.setStatus("busy", t("Synchronising…"));
       const key = this.keyBytes();
       const local = await this.context.data.sync.export();
       const files = await this.remote.list();
@@ -2465,13 +2476,13 @@ export class Sync {
 
       this.context.storage.set("lastSync", Date.now());
       const detail = [
-        `${pulled} change(s) in`,
-        merged ? `${merged} merged` : null,
-        conflicts ? `${conflicts} edited on both devices` : null,
-        pushed ? `${fresh.objects.length} object(s) out` : "nothing new to send",
-        media.pulled ? `${media.pulled} image(s) in` : null,
-        media.pushed ? `${media.pushed} image(s) out` : null,
-        skipped ? `${skipped} held back (note is open)` : null,
+        t("{count} change(s) in", { count: pulled }),
+        merged ? t("{count} merged", { count: merged }) : null,
+        conflicts ? t("{count} edited on both devices", { count: conflicts }) : null,
+        pushed ? t("{count} object(s) out", { count: fresh.objects.length }) : t("nothing new to send"),
+        media.pulled ? t("{count} image(s) in", { count: media.pulled }) : null,
+        media.pushed ? t("{count} image(s) out", { count: media.pushed }) : null,
+        skipped ? t("{count} held back (note is open)", { count: skipped }) : null,
       ].filter(Boolean).join(", ");
       this.setStatus("ok", `${detail}.${notes.length ? ` ${notes.join(" ")}` : ""}`);
       return { pulled, skipped, notes, events, media, pushed, conflicts };
@@ -2669,7 +2680,7 @@ function mountPanel(sync, container) {
   const root = element("div", { className: "nsync" });
   root.append(element("style", { textContent: styles }));
   const shell = element("div", { className: "nsync-shell" });
-  shell.append(element("p", { className: "nsync-lead", textContent: "Keeps this workspace in step across your devices through your own Google Drive. Nothing leaves this machine unencrypted." }));
+  shell.append(element("p", { className: "nsync-lead", textContent: t("Keeps this workspace in step across your devices through your own Google Drive. Nothing leaves this machine unencrypted.") }));
 
   const status = element("div", { className: "status" });
   status.setAttribute("role", "status");
@@ -2688,15 +2699,15 @@ function mountPanel(sync, container) {
     className: "nsync-device-name",
     type: "text",
     maxLength: 80,
-    placeholder: "e.g. Work laptop",
+    placeholder: t("e.g. Work laptop"),
     value: sync.deviceName(),
   });
   nameInput.onchange = () => { sync.context.storage.set("deviceName", nameInput.value.trim()); };
   const peerList = element("ul", { className: "nsync-peers" });
   devices.append(
-    element("label", { className: "nsync-hint", textContent: "This device is called" }),
+    element("label", { className: "nsync-hint", textContent: t("This device is called") }),
     nameInput,
-    element("p", { className: "nsync-hint", textContent: "Other devices — when each last sent its changes:" }),
+    element("p", { className: "nsync-hint", textContent: t("Other devices — when each last sent its changes:") }),
     peerList,
   );
   const paintPeers = () => {
@@ -2705,9 +2716,9 @@ function mountPanel(sync, container) {
       ? peers
         .sort((a, b) => (b[1].writtenAt ?? 0) - (a[1].writtenAt ?? 0))
         .map(([id, peer]) => element("li", {
-          textContent: `${peer.name || `Unnamed device (${id.slice(0, 6)})`}: ${peer.writtenAt ? new Date(peer.writtenAt).toLocaleString() : "unknown (older plugin version)"}`,
+          textContent: `${peer.name || t("Unnamed device ({id})", { id: id.slice(0, 6) })}: ${peer.writtenAt ? new Date(peer.writtenAt).toLocaleString() : t("unknown (older plugin version)")}`,
         }))
-      : [element("li", { className: "nsync-hint", textContent: "None seen yet." })]));
+      : [element("li", { className: "nsync-hint", textContent: t("None seen yet.") })]));
   };
 
   const paint = ({ state, text }) => {
@@ -2715,10 +2726,10 @@ function mountPanel(sync, container) {
     status.dataset.state = state;
     const lastSync = sync.context.storage.get("lastSync");
     status.textContent = state === "idle" && lastSync
-      ? `Last synced ${new Date(lastSync).toLocaleString()}`
+      ? t("Last synced {when}", { when: new Date(lastSync).toLocaleString() })
       : text;
     summary.dataset.state = state;
-    summaryText.textContent = ({ idle: "Ready when setup is complete", busy: "Synchronising", ok: "Synced", error: "Needs attention" })[state] ?? "Notible Sync";
+    summaryText.textContent = ({ idle: t("Ready when setup is complete"), busy: t("Synchronising"), ok: t("Synced"), error: t("Needs attention") })[state] ?? t("Notible Sync");
   };
   const stopWatching = sync.onStatus(paint);
   paint(sync.status);
@@ -2742,7 +2753,7 @@ function mountPanel(sync, container) {
     const ready = signedIn && paired;
     summary.dataset.setup = ready ? "ready" : "incomplete";
     if (sync.status.state === "idle") {
-      summaryText.textContent = ready ? "Ready to synchronise" : "Complete setup to begin";
+      summaryText.textContent = ready ? t("Ready to synchronise") : t("Complete setup to begin");
     }
 
     // --- account
@@ -2750,27 +2761,27 @@ function mountPanel(sync, container) {
     account.append(element("summary", { className: "nsync-step__header" }, [
       element("div", { className: "nsync-step__heading" }, [
         element("span", { className: "nsync-step__number", textContent: "01" }),
-        element("h4", { textContent: "Google account" }),
+        element("h4", { textContent: t("Google account") }),
       ]),
-      element("span", { className: "nsync-step__badge", textContent: signedIn ? "Connected" : "Not connected" }),
+      element("span", { className: "nsync-step__badge", textContent: signedIn ? t("Connected") : t("Not connected") }),
     ]));
     if (signedIn) {
-      const out = element("button", { className: "nsync-button--danger", type: "button", textContent: "Sign out and revoke access" });
+      const out = element("button", { className: "nsync-button--danger", type: "button", textContent: t("Sign out and revoke access") });
       out.onclick = async () => { await sync.remote.signOut(); await sync.forgetLineage(); render(); };
       account.append(
         element("p", {
-          textContent: `Snapshots live in a visible “${FOLDER_NAME}” folder on your Drive.`,
-          title: "Pasted images go in its “media” subfolder, and only travel while Settings → Files & links → “Let plugins read pasted images” is on. Notes sync either way.",
+          textContent: t("Snapshots live in a visible “{folder}” folder on your Drive.", { folder: FOLDER_NAME }),
+          title: t("Pasted images go in its “media” subfolder, and only travel while Settings → Files & links → “Let plugins read pasted images” is on. Notes sync either way."),
         }),
         element("div", { className: "nsync-actions" }, [out]),
       );
     } else {
-      const button = element("button", { className: "nsync-button--primary", type: "button", textContent: "Sign in with Google" });
-      const hint = element("p", { className: "nsync-hint", textContent: "Notible encrypts your notes before they leave this device." });
+      const button = element("button", { className: "nsync-button--primary", type: "button", textContent: t("Sign in with Google") });
+      const hint = element("p", { className: "nsync-hint", textContent: t("Notible encrypts your notes before they leave this device.") });
       button.onclick = async () => {
         button.disabled = true;
         const original = hint.textContent;
-        hint.textContent = "Finish signing in in your browser, then come back here.";
+        hint.textContent = t("Finish signing in in your browser, then come back here.");
         try {
           await sync.remote.signIn();
           render();
@@ -2778,7 +2789,7 @@ function mountPanel(sync, container) {
           hint.textContent = error.message;
         } finally {
           button.disabled = false;
-          if (hint.textContent.startsWith("Finish signing in")) hint.textContent = original;
+          if (hint.textContent === t("Finish signing in in your browser, then come back here.")) hint.textContent = original;
         }
       };
       account.append(element("div", { className: "nsync-actions" }, [button]), hint);
@@ -2790,32 +2801,32 @@ function mountPanel(sync, container) {
     pairing.append(element("summary", { className: "nsync-step__header" }, [
       element("div", { className: "nsync-step__heading" }, [
         element("span", { className: "nsync-step__number", textContent: "02" }),
-        element("h4", { textContent: "Pairing key" }),
+        element("h4", { textContent: t("Pairing key") }),
       ]),
-      element("span", { className: "nsync-step__badge", textContent: paired ? "Paired" : "Needs setup" }),
+      element("span", { className: "nsync-step__badge", textContent: paired ? t("Paired") : t("Needs setup") }),
     ]));
     if (paired) {
       const pairingKey = sync.context.storage.get("key");
-      const copy = element("button", { className: "nsync-button", type: "button", textContent: "Copy key" });
+      const copy = element("button", { className: "nsync-button", type: "button", textContent: t("Copy key") });
       copy.onclick = async () => {
         const original = copy.textContent;
         try {
           await navigator.clipboard.writeText(pairingKey);
-          copy.textContent = "Copied";
+          copy.textContent = t("Copied");
         } catch {
-          copy.textContent = "Copy unavailable";
+          copy.textContent = t("Copy unavailable");
         }
         setTimeout(() => { copy.textContent = original; }, 1800);
       };
       pairing.append(
-        element("p", { textContent: "Enter this key on your other device. Anyone without it cannot read your snapshots. Keep it somewhere safe: it cannot be recovered." }),
+        element("p", { textContent: t("Enter this key on your other device. Anyone without it cannot read your snapshots. Keep it somewhere safe: it cannot be recovered.") }),
         element("div", { className: "nsync-key" }, [element("code", { textContent: pairingKey }), copy]),
       );
     } else {
-      const input = element("input", { id: "nsync-pairing-key", placeholder: "Paste the key from your first device", spellcheck: false, autocomplete: "off" });
-      const label = element("label", { className: "nsync-hint", htmlFor: "nsync-pairing-key", textContent: "Create a key on your first device, then paste it here." });
-      const create = element("button", { type: "button", textContent: "Create a new key" });
-      const use = element("button", { className: "nsync-button--primary", type: "button", textContent: "Use this key" });
+      const input = element("input", { id: "nsync-pairing-key", placeholder: t("Paste the key from your first device"), spellcheck: false, autocomplete: "off" });
+      const label = element("label", { className: "nsync-hint", htmlFor: "nsync-pairing-key", textContent: t("Create a key on your first device, then paste it here.") });
+      const create = element("button", { type: "button", textContent: t("Create a new key") });
+      const use = element("button", { className: "nsync-button--primary", type: "button", textContent: t("Use this key") });
       const error = element("p", { className: "nsync-error" });
       error.setAttribute("role", "alert");
       create.onclick = () => { sync.createKey(); render(); };
@@ -2833,35 +2844,35 @@ function mountPanel(sync, container) {
 
     // --- run
     const runState = sync.status.state === "busy"
-      ? "Working"
+      ? t("Working")
       : sync.status.state === "error"
-        ? "Needs attention"
+        ? t("Needs attention")
         : ready
-          ? sync.status.state === "ok" ? "Up to date" : "Ready"
-          : "Locked";
+          ? sync.status.state === "ok" ? t("Up to date") : t("Ready")
+          : t("Locked");
     const run = stepDetails("3", { primary: true });
     run.append(element("summary", { className: "nsync-step__header" }, [
       element("div", { className: "nsync-step__heading" }, [
         element("span", { className: "nsync-step__number", textContent: "03" }),
-        element("h4", { textContent: "Synchronise" }),
+        element("h4", { textContent: t("Synchronise") }),
       ]),
       element("span", { className: "nsync-step__badge", textContent: runState }),
     ]));
-    const now = element("button", { className: "nsync-button--primary", type: "button", textContent: "Synchronise now", disabled: !ready });
+    const now = element("button", { className: "nsync-button--primary", type: "button", textContent: t("Synchronise now"), disabled: !ready });
     now.onclick = async () => {
       now.disabled = true;
       try { await sync.run(); } catch { /* status already shows it */ } finally { now.disabled = false; }
     };
     run.append(
       element("p", {
-        textContent: "The first run uploads this device’s workspace and downloads the others. Nothing is merged or deleted automatically.",
-        title: "Pasted images travel too, but only while Settings → Files & links → “Let plugins read pasted images” is on. Notes sync either way.",
+        textContent: t("The first run uploads this device’s workspace and downloads the others. Nothing is merged or deleted automatically."),
+        title: t("Pasted images travel too, but only while Settings → Files & links → “Let plugins read pasted images” is on. Notes sync either way."),
       }),
       element("div", { className: "nsync-actions" }, [now]),
       element("div", { className: "nsync-status" }, [
         status,
         devices,
-        !ready ? element("p", { className: "nsync-hint", textContent: "Connect Google Drive and pair this device to enable synchronisation." }) : null,
+        !ready ? element("p", { className: "nsync-hint", textContent: t("Connect Google Drive and pair this device to enable synchronisation.") }) : null,
       ].filter(Boolean)),
     );
     body.append(run);
@@ -2871,9 +2882,9 @@ function mountPanel(sync, container) {
     auto.append(element("summary", { className: "nsync-step__header" }, [
       element("div", { className: "nsync-step__heading" }, [
         element("span", { className: "nsync-step__number", textContent: "04" }),
-        element("h4", { textContent: "Automatic synchronisation" }),
+        element("h4", { textContent: t("Automatic synchronisation") }),
       ]),
-      element("span", { className: "nsync-step__badge", textContent: "Optional" }),
+      element("span", { className: "nsync-step__badge", textContent: t("Optional") }),
     ]));
     const toggle = element("input", { id: "nsync-auto-toggle", type: "checkbox", checked: sync.context.storage.get("auto") ?? true });
     const every = element("input", {
@@ -2893,11 +2904,11 @@ function mountPanel(sync, container) {
     auto.append(
       element("div", { className: "nsync-schedule" }, [
         switchFor(toggle),
-        element("label", { className: "nsync-schedule__label", htmlFor: "nsync-auto-toggle", textContent: "Synchronise automatically, and at least every" }),
+        element("label", { className: "nsync-schedule__label", htmlFor: "nsync-auto-toggle", textContent: t("Synchronise automatically, and at least every") }),
         every,
-        element("span", { className: "nsync-schedule__suffix", textContent: "minutes" }),
+        element("span", { className: "nsync-schedule__suffix", textContent: t("minutes") }),
       ]),
-      element("p", { className: "nsync-hint", textContent: "On by default: also runs when Notible starts and about a minute after you change something. Each run contacts Google." }),
+      element("p", { className: "nsync-hint", textContent: t("On by default: also runs when Notible starts and about a minute after you change something. Each run contacts Google.") }),
     );
     body.append(auto);
 
@@ -2909,9 +2920,9 @@ function mountPanel(sync, container) {
     const notices = element("input", { id: "nsync-notices-toggle", type: "checkbox", checked: sync.context.storage.get("mergeNotices") ?? true });
     notices.onchange = () => {
       sync.context.storage.set("mergeNotices", notices.checked);
-      noticeBadge.textContent = tr(notices.checked ? "On" : "Off");
+      noticeBadge.textContent = (notices.checked ? tr("On") : tr("Off"));
     };
-    noticeBadge.textContent = tr(notices.checked ? "On" : "Off");
+    noticeBadge.textContent = (notices.checked ? tr("On") : tr("Off"));
     noticeStep.append(element("summary", { className: "nsync-step__header" }, [
       element("div", { className: "nsync-step__heading" }, [
         element("span", { className: "nsync-step__number", textContent: "05" }),
@@ -2946,7 +2957,7 @@ export default {
   manifest: {
     id: "notible.sync",
     name: "Notible Sync",
-    version: "0.4.7",
+    version: "0.4.8",
     apiVersion: "1.26",
     description: "Keep this workspace the same on your own computers through your Google Drive. Everything is encrypted on your computer first, so neither Notible nor Google can read it.",
     author: "Notible",
@@ -2954,6 +2965,8 @@ export default {
   },
 
   onload(context) {
+
+    if (context.i18n?.t) t = (key, values) => context.i18n.t(key, values);
     const sync = new Sync(context);
     this._sync = sync;
     // SYNC-TRANSPORT (Hive #9): in an agent sandbox with a shared folder,
@@ -2977,14 +2990,14 @@ export default {
     // user picks this row — not on the empty Plugins screen for everyone.
     this._disposables.push(context.settings.register({
       id: "sync",
-      title: "Account & sync",
+      title: t("Account & sync"),
       mount: ({ container }) => mountPanel(sync, container),
     }));
 
     this._disposables.push(context.commands.register({
       id: "now",
-      name: "Secure Sync: sync now",
-      description: "Push this device's snapshot and take in the others.",
+      name: t("Secure Sync: sync now"),
+      description: t("Push this device's snapshot and take in the others."),
       execute: () => sync.run(),
     }));
 
