@@ -1,7 +1,7 @@
 {
   "id": "notible.sync",
   "name": "Notible Sync",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "apiVersion": "1.26",
   "minCoreVersion": "0.95.0",
   "description": "Keep this workspace the same on your own computers through your Google Drive. Everything is encrypted on your computer first, so neither Notible nor Google can read it.",

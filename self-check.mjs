@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import plugin, { Sync, SharedFolder, encodeKey, decodeKey, seal, unseal, safeParse, validateSnapshot, planApply, gunzip, mediaNamesIn, mediaNamesOf, mergeTableProps, mergeEmbeddedTables, nextBases, planConflicts, objectHash } from "./main.js";
+import plugin, { Sync, SharedFolder, encodeKey, decodeKey, seal, unseal, safeParse, validateSnapshot, planApply, gunzip, mediaNamesIn, mediaNamesOf, mergeTableProps, mergeEmbeddedTables, nextBases, planConflicts, objectHash, pluralText, CHANGES_IN, MERGED, EDITED_BOTH, HELD_BACK } from "./main.js";
 // SYNC-MERGE-A (Hive #5): main.js carries a copy of plugins/shared/sync-merge.js.
 import { inlinedBlock, sourceBlock } from "../../scripts/sync-merge-inline.mjs";
 import { checkNotices } from "../shared/sync-notice.check.mjs";
@@ -315,5 +315,48 @@ assert.equal(planApply(two, "unrelated").apply.objects.length, 2);
 // SYNC-NOTICE (Hive #11): one grouped notice per cycle; the setting turns it off.
 await checkNotices(Sync, "notible.sync", new URL("./", import.meta.url));
 await checkSharedFolder(SharedFolder);
+
+// I18N (Hive #56): the summary line's plural. English one/other; Polish one / few / other;
+// a locale with no translation, or an old Core whose t returns the key, shows English.
+{
+  const strings = JSON.parse(readFileSync(new URL("./locales/pl.json", import.meta.url), "utf8")).strings;
+  const translate = (language) => (key, values) => {
+    const text = language === "pl" && strings[key] !== undefined ? strings[key] : key;
+    return values ? text.replace(/\{(\w+)\}/g, (whole, name) => (name in values ? String(values[name]) : whole)) : text;
+  };
+  const show = (text, count) => text.replace("{count}", String(count));
+  for (const count of [1, 2, 5, 22]) {
+    assert.equal(pluralText(translate("en"), CHANGES_IN, count, "en", { count }), show(count === 1 ? "{count} change in" : "{count} changes in", count), `English for ${count}`);
+    assert.equal(pluralText(translate("pl"), CHANGES_IN, count, "pl", { count }), show(count === 1 ? "{count} zmiana otrzymana" : count === 5 ? "{count} zmian otrzymanych" : "{count} zmiany otrzymane", count), `Polish for ${count}`);
+  }
+  // Number-first, same verbs as Sync Simple. The neighbours get "#one" / "#few" too.
+  for (const [forms, name, one, few, other] of [
+    [MERGED, "merged", "{count} notatka scalona", "{count} notatki scalone", "{count} notatek scalonych"],
+    [EDITED_BOTH, "edited", "{count} notatka edytowana na obu urządzeniach", "{count} notatki edytowane na obu urządzeniach", "{count} notatek edytowanych na obu urządzeniach"],
+    [HELD_BACK, "held back", "{count} zmiana wstrzymana (notatka jest otwarta)", "{count} zmiany wstrzymane (notatka jest otwarta)", "{count} zmian wstrzymanych (notatka jest otwarta)"],
+  ]) {
+    for (const count of [1, 2, 5]) {
+      const want = count === 1 ? one : count === 2 ? few : other;
+      assert.equal(pluralText(translate("pl"), forms, count, "pl", { count }), show(want, count), `Polish ${name} for ${count}`);
+      assert.equal(pluralText(translate("en"), forms, count, "en", { count }), show(name === "merged" ? "{count} merged" : name === "edited" ? "{count} edited on both devices" : "{count} held back (note is open)", count), `English ${name} for ${count}`);
+    }
+  }
+  assert.equal(pluralText(translate("cs"), CHANGES_IN, 2, "cs", { count: 2 }), show("{count} changes in", 2), "a locale with no translation shows English");
+  assert.equal(pluralText(translate("en"), CHANGES_IN, 2, "pl", { count: 2 }), show("{count} changes in", 2), "an old Core (t returns the key) shows English");
+}
+
+// I18N (Hive #56): the merge notes count cells in English, inline (not via t()).
+{
+  const table = (id, props, updated_at) => ({ id, type: "table", title: "T", content: "", props, created_at: 1, updated_at, archived_at: null, trashed_at: null, parent_id: null });
+  const cols = [{ id: "c1", name: "A", type: "text" }, { id: "c2", name: "B", type: "text" }];
+  const rowsWith = (cells) => JSON.stringify({ columns: cols, rows: [{ id: "r1", cells }] });
+  const base = rowsWith({ c1: "a", c2: "b" });
+  for (const [n, word] of [[1, "1 cell changed on both"], [2, "2 cells changed on both"]]) {
+    const mine = Object.fromEntries(["c1", "c2"].map((c, i) => [c, i < n ? "L" : { c1: "a", c2: "b" }[c]]));
+    const theirs = Object.fromEntries(["c1", "c2"].map((c, i) => [c, i < n ? "R" : { c1: "a", c2: "b" }[c]]));
+    const out = planConflicts([table("t", rowsWith(theirs), 3)], new Map([["t", table("t", rowsWith(mine), 2)]]), {}, { t: base }, "Home");
+    assert.ok(out.notes[0].includes(word), `cell wording for ${n}: ${out.notes[0]}`);
+  }
+}
 
 console.log("Notible Sync self-check passed.");

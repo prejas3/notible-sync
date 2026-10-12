@@ -346,6 +346,22 @@ export async function digestOf(value) {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+// I18N (Hive #55): text for a count. An `extra` key ("...#few") exists only in
+// locale files, so English never shows it; an untranslated one falls back to one/other.
+export const pluralText = (t, forms, count, locale, values) => {
+  const category = new Intl.PluralRules(locale || "en").select(count);
+  const extra = forms.extra?.[category];
+  return t(extra && t(extra) !== extra ? extra : category === "one" ? forms.one : forms.other, values);
+};
+export const CHANGES_IN = { one: tr("{count} change in"), other: tr("{count} changes in"), extra: { few: tr("{count} changes in#few") } };
+const OBJECTS_OUT = { one: tr("{count} object out"), other: tr("{count} objects out"), extra: { few: tr("{count} objects out#few") } };
+const IMAGES_IN = { one: tr("{count} image in"), other: tr("{count} images in"), extra: { few: tr("{count} images in#few") } };
+const IMAGES_OUT = { one: tr("{count} image out"), other: tr("{count} images out"), extra: { few: tr("{count} images out#few") } };
+// I18N (Hive #56): these counts need "#one" too, so Polish can say 1 notatka and 2 notatki.
+export const MERGED = { one: tr("{count} merged"), other: tr("{count} merged"), extra: { one: tr("{count} merged#one"), few: tr("{count} merged#few") } };
+export const EDITED_BOTH = { one: tr("{count} edited on both devices"), other: tr("{count} edited on both devices"), extra: { one: tr("{count} edited on both devices#one"), few: tr("{count} edited on both devices#few") } };
+export const HELD_BACK = { one: tr("{count} held back (note is open)"), other: tr("{count} held back (note is open)"), extra: { one: tr("{count} held back (note is open)#one"), few: tr("{count} held back (note is open)#few") } };
+
 // <sync-merge>
 // SYNC-MERGE-A (Hive #5): conflict handling shared by Notible Sync and Sync
 // Simple. This file is the source; `node scripts/sync-merge-inline.mjs`
@@ -682,7 +698,7 @@ export function planConflicts(remoteObjects, localById, bases, tableBases, copyL
         events.push({ kind: "copy", id: remote.id, title, copy: copy.title, copyId: copy.id, mine: true });
       }
       notes.push(merged.conflicts
-        ? `"${title}": merged edits from both devices; ${merged.conflicts} cell(s) changed on both, newer kept${merged.localLost ? ", this device's version saved as a conflict copy" : ""}.`
+        ? `"${title}": merged edits from both devices; ${merged.conflicts} cell${merged.conflicts === 1 ? "" : "s"} changed on both, newer kept${merged.localLost ? ", this device's version saved as a conflict copy" : ""}.`
         : `"${title}": merged edits from both devices.`);
       continue;
     }
@@ -701,7 +717,7 @@ export function planConflicts(remoteObjects, localById, bases, tableBases, copyL
         events.push({ kind: "copy", id: remote.id, title, copy: copy.title, copyId: copy.id, mine: true });
       }
       notes.push(embedded.conflicts
-        ? `"${title}": merged table edits from both devices; ${embedded.conflicts} cell(s) changed on both, newer kept${embedded.localLost ? ", this device's version saved as a conflict copy" : ""}.`
+        ? `"${title}": merged table edits from both devices; ${embedded.conflicts} cell${embedded.conflicts === 1 ? "" : "s"} changed on both, newer kept${embedded.localLost ? ", this device's version saved as a conflict copy" : ""}.`
         : `"${title}": merged table edits from both devices.`);
       continue;
     }
@@ -2422,7 +2438,7 @@ export class Sync {
             name: validated.deviceName || peers[validated.deviceId]?.name || "",
             writtenAt: validated.writtenAt,
           };
-          if (validated.rejected.length) notes.push(`${file.name}: skipped ${validated.rejected.length} object(s)`);
+          if (validated.rejected.length) notes.push(`${file.name}: skipped ${validated.rejected.length} object${validated.rejected.length === 1 ? "" : "s"}`);
           const { apply, deferred } = planApply(validated, this.openObjectId);
           skipped += deferred.length;
           const result = await pullPeer(lin, io, {
@@ -2476,13 +2492,13 @@ export class Sync {
 
       this.context.storage.set("lastSync", Date.now());
       const detail = [
-        t("{count} change(s) in", { count: pulled }),
-        merged ? t("{count} merged", { count: merged }) : null,
-        conflicts ? t("{count} edited on both devices", { count: conflicts }) : null,
-        pushed ? t("{count} object(s) out", { count: fresh.objects.length }) : t("nothing new to send"),
-        media.pulled ? t("{count} image(s) in", { count: media.pulled }) : null,
-        media.pushed ? t("{count} image(s) out", { count: media.pushed }) : null,
-        skipped ? t("{count} held back (note is open)", { count: skipped }) : null,
+        pluralText(t, CHANGES_IN, pulled, this.context.i18n?.locale, { count: pulled }),
+        merged ? pluralText(t, MERGED, merged, this.context.i18n?.locale, { count: merged }) : null,
+        conflicts ? pluralText(t, EDITED_BOTH, conflicts, this.context.i18n?.locale, { count: conflicts }) : null,
+        pushed ? pluralText(t, OBJECTS_OUT, fresh.objects.length, this.context.i18n?.locale, { count: fresh.objects.length }) : t("nothing new to send"),
+        media.pulled ? pluralText(t, IMAGES_IN, media.pulled, this.context.i18n?.locale, { count: media.pulled }) : null,
+        media.pushed ? pluralText(t, IMAGES_OUT, media.pushed, this.context.i18n?.locale, { count: media.pushed }) : null,
+        skipped ? pluralText(t, HELD_BACK, skipped, this.context.i18n?.locale, { count: skipped }) : null,
       ].filter(Boolean).join(", ");
       this.setStatus("ok", `${detail}.${notes.length ? ` ${notes.join(" ")}` : ""}`);
       return { pulled, skipped, notes, events, media, pushed, conflicts };
@@ -2957,7 +2973,7 @@ export default {
   manifest: {
     id: "notible.sync",
     name: "Notible Sync",
-    version: "0.4.8",
+    version: "0.4.9",
     apiVersion: "1.26",
     description: "Keep this workspace the same on your own computers through your Google Drive. Everything is encrypted on your computer first, so neither Notible nor Google can read it.",
     author: "Notible",
